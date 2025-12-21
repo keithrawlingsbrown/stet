@@ -1,0 +1,159 @@
+﻿import json
+from uuid import UUID, uuid4
+from datetime import datetime, timezone
+from fastapi import FastAPI, Header, Depends, HTTPException, Query, Response
+from asyncpg.exceptions import UniqueViolationError
+from app.db import get_pool
+from app.models import (
+    CreateCorrectionRequest, CreateCorrectionResponse,
+    FactsResponse, FactItem, HistoryResponse, HistoryItem,
+    Subject, Actor, CorrectionStatus, CorrectionClass,
+)
+from app.logic import canonical_json_sha256, parse_csv, is_allowed
+
+app = FastAPI(title="Stet API", version="1.0.0")
+
+def rate_limit_headers() -> dict:
+    return {"X-RateLimit-Limit": "60", "X-RateLimit-Remaining": "59", "X-RateLimit-Reset": "0"}
+
+def require_tenant(x_tenant_id: UUID = Header(..., alias="X-Tenant-Id")) -> UUID:
+    return x_tenant_id
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+from uuid import uuid4
+from datetime import datetime
+
+@app.post("/v1/corrections", status_code=201)
+async def create_correction(
+    payload: CreateCorrectionRequest,
+    tenant_id: UUID = Depends(require_tenant),
+):
+    pool = await get_pool()
+    correction_id = uuid4()
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+
+            # 1) Lock existing ACTIVE correction for this field
+            existing = await conn.fetchrow(
+                """
+                SELECT correction_id
+                FROM corrections
+                WHERE tenant_id=$1
+                  AND subject_type=$2
+                  AND subject_id=$3
+                  AND field_key=$4
+                  AND status='ACTIVE'
+                FOR UPDATE
+                """,
+                tenant_id,
+                payload.subject.type,
+                payload.subject.id,
+                payload.field_key,
+            )
+
+            supersedes_id = existing["correction_id"] if existing else None
+
+            # 2) Supersede old correction (if exists)
+            if supersedes_id:
+                await conn.execute(
+                    """
+                    UPDATE corrections
+                    SET status='SUPERSEDED'
+                    WHERE correction_id=$1
+                    """,
+                    supersedes_id,
+                )
+
+            # 3) Insert new correction
+            await conn.execute(
+                """
+                INSERT INTO corrections (
+                    correction_id,
+                    tenant_id,
+                    subject_type,
+                    subject_id,
+                    field_key,
+                    value,
+                    class,
+                    status,
+                    permissions,
+                    actor,
+                    supersedes,
+                    created_at
+                )
+                VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8,$9,$10,NOW())
+                """,
+                correction_id,
+                tenant_id,
+                payload.subject.type,
+                payload.subject.id,
+                payload.field_key,
+                payload.value,
+                payload.class_,
+                payload.permissions.model_dump(),
+                payload.actor.model_dump(),
+                supersedes_id,
+            )
+
+    return CreateCorrectionResponse(
+        correction_id=correction_id,
+        status="ACTIVE",
+        supersedes=supersedes_id,
+        created_at=datetime.utcnow(),
+    )
+    
+@app.get("/v1/facts", response_model=FactsResponse)
+async def get_facts(response: Response, subject_type: str = Query(...), subject_id: str = Query(...), requester_id: str = Query(...), requester_scopes: str | None = Query(None), field_keys: str | None = Query(None), q: str | None = Query(None), tenant_id: UUID = Depends(require_tenant)):
+    response.headers.update(rate_limit_headers())
+    scopes_list = parse_csv(requester_scopes)
+    field_keys_list = parse_csv(field_keys)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT correction_id, field_key, value, permissions, created_at, actor_type, actor_id FROM corrections WHERE tenant_id=$1 AND subject_type=$2 AND subject_id=$3 AND status='ACTIVE' AND class='FACT'", tenant_id, subject_type, subject_id)
+    permitted = []
+    for r in rows:
+        permissions = r["permissions"]
+        if isinstance(permissions, str):
+            permissions = json.loads(permissions)
+        if is_allowed(requester_id, scopes_list, permissions):
+            permitted.append(r)
+    if field_keys_list:
+        permitted = [r for r in permitted if r["field_key"] in field_keys_list]
+    if q:
+        q_lower = q.lower()
+        permitted = [r for r in permitted if q_lower in r["field_key"].lower() or q_lower in json.dumps(r["value"], ensure_ascii=False).lower()]
+    facts = [FactItem(field_key=r["field_key"], value=r["value"], corrected_at=r["created_at"], correction_id=r["correction_id"], actor=Actor(type=r["actor_type"], id=r["actor_id"])) for r in permitted]
+    return FactsResponse(subject=Subject(type=subject_type, id=subject_id), facts=facts)
+
+@app.get("/v1/history", response_model=HistoryResponse)
+async def get_history(response: Response, subject_type: str = Query(...), subject_id: str = Query(...), requester_id: str = Query(...), requester_scopes: str | None = Query(None), field_key: str | None = Query(None), include_revoked: bool = Query(False), tenant_id: UUID = Depends(require_tenant)):
+    response.headers.update(rate_limit_headers())
+    scopes_list = parse_csv(requester_scopes)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        sql = "SELECT correction_id, field_key, value, class, status, supersedes, permissions, created_at, actor_type, actor_id FROM corrections WHERE tenant_id=$1 AND subject_type=$2 AND subject_id=$3"
+        params = [tenant_id, subject_type, subject_id]
+        if not include_revoked:
+            sql += " AND status != 'REVOKED'"
+        if field_key:
+            params.append(field_key)
+            sql += f" AND field_key=${len(params)}"
+        sql += " ORDER BY created_at DESC"
+        rows = await conn.fetch(sql, *params)
+    permitted = []
+    for r in rows:
+        permissions = r["permissions"]
+        if isinstance(permissions, str):
+            permissions = json.loads(permissions)
+        if is_allowed(requester_id, scopes_list, permissions):
+            permitted.append(r)
+    superseded_by_map = {}
+    for r in permitted:
+        if r["supersedes"]:
+            superseded_by_map[r["supersedes"]] = r["correction_id"]
+    history = [HistoryItem(correction_id=r["correction_id"], field_key=r["field_key"], value=r["value"], class_=CorrectionClass(r["class"]), status=CorrectionStatus(r["status"]), supersedes=r["supersedes"], superseded_by=superseded_by_map.get(r["correction_id"]), created_at=r["created_at"], actor=Actor(type=r["actor_type"], id=r["actor_id"])) for r in permitted]
+    return HistoryResponse(subject=Subject(type=subject_type, id=subject_id), history=history)

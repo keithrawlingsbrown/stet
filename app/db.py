@@ -12,3 +12,10 @@ async def get_pool() -> asyncpg.pool.Pool:
             max_size=10,
         )
     return _POOL
+
+async def close_pool():
+    """Close the connection pool (for cleanup)"""
+    global _POOL
+    if _POOL is not None:
+        await _POOL.close()
+        _POOL = None

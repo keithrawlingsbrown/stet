@@ -42,6 +42,7 @@ async def create_correction(payload: CreateCorrectionRequest, response: Response
                     raise HTTPException(500, detail={"error": {"code": "INVALID_REQUEST", "message": "Idempotency record points to missing correction", "details": {}}})
                 response.status_code = 200
                 return CreateCorrectionResponse(correction_id=existing["correction_id"], status=existing["status"], supersedes=existing["supersedes"], created_at=existing["created_at"])
+            
             superseded_id = None
             if payload.supersedes is not None:
                 target = await conn.fetchrow("SELECT correction_id, subject_type, subject_id, field_key, status FROM corrections WHERE tenant_id=$1 AND correction_id=$2", tenant_id, payload.supersedes)
@@ -55,14 +56,20 @@ async def create_correction(payload: CreateCorrectionRequest, response: Response
             else:
                 existing_active = await conn.fetchrow("SELECT correction_id FROM corrections WHERE tenant_id=$1 AND subject_type=$2 AND subject_id=$3 AND field_key=$4 AND status='ACTIVE'", tenant_id, payload.subject.type, payload.subject.id, payload.field_key)
                 superseded_id = existing_active["correction_id"] if existing_active else None
+            
             new_id = uuid4()
             now = datetime.now(timezone.utc)
+            
+            # CRITICAL: Supersede old correction BEFORE inserting new one
+            if superseded_id:
+                await conn.execute("UPDATE corrections SET status='SUPERSEDED' WHERE tenant_id=$1 AND correction_id=$2", tenant_id, superseded_id)
+            
+            # Now insert new correction
             try:
                 await conn.execute("INSERT INTO corrections (correction_id, tenant_id, subject_type, subject_id, field_key, value, class, status, supersedes, permissions, actor_type, actor_id, idempotency_key, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8,$9,$10,$11,$12,$13)", new_id, tenant_id, payload.subject.type, payload.subject.id, payload.field_key, json.dumps(payload.value), payload.class_.value, superseded_id, json.dumps(perms), payload.actor.type, payload.actor.id, payload.idempotency_key, now)
             except UniqueViolationError:
                 raise HTTPException(409, detail={"error": {"code": "INVALID_REQUEST", "message": "ACTIVE invariant violated (concurrent write). Retry.", "details": {}}})
-            if superseded_id:
-                await conn.execute("UPDATE corrections SET status='SUPERSEDED' WHERE tenant_id=$1 AND correction_id=$2", tenant_id, superseded_id)
+            
             await conn.execute("INSERT INTO idempotency (tenant_id, key, correction_id, payload_hash) VALUES ($1,$2,$3,$4)", tenant_id, payload.idempotency_key, new_id, payload_hash)
             response.status_code = 201
             return CreateCorrectionResponse(correction_id=new_id, status=CorrectionStatus.ACTIVE, supersedes=superseded_id, created_at=now)

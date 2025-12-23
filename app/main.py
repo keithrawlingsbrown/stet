@@ -1,9 +1,10 @@
-﻿import json
+import json
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, Depends, HTTPException, Query, Response
 from asyncpg.exceptions import UniqueViolationError
-from app.db import get_pool
+from app.db import get_pool, close_pool
 from app.models import (
     CreateCorrectionRequest, CreateCorrectionResponse,
     FactsResponse, FactItem, HistoryResponse, HistoryItem,
@@ -11,7 +12,14 @@ from app.models import (
 )
 from app.logic import canonical_json_sha256, parse_csv, is_allowed
 
-app = FastAPI(title="Stet API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: pool created lazily by get_pool()
+    yield
+    # Shutdown: close pool cleanly
+    await close_pool()
+
+app = FastAPI(title="Stet API", version="1.0.0", lifespan=lifespan)
 
 def rate_limit_headers() -> dict:
     return {"X-RateLimit-Limit": "60", "X-RateLimit-Remaining": "59", "X-RateLimit-Reset": "0"}

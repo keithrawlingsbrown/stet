@@ -1,6 +1,7 @@
 import json
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, Depends, HTTPException, Query, Response
 from asyncpg.exceptions import UniqueViolationError
@@ -66,6 +67,15 @@ async def create_correction(payload: CreateCorrectionRequest, response: Response
                 superseded_id = existing_active["correction_id"] if existing_active else None
             
             new_id = uuid4()
+
+            # Origin attestation (forensic-grade attribution)
+            origin = {
+                "service": os.getenv("STET_SERVICE", "stet-api"),
+                "version": os.getenv("STET_VERSION", "dev"),
+                "environment": os.getenv("STET_ENV", "local")
+            }
+            if not origin.get("service") or not origin.get("version"):
+                raise HTTPException(500, detail={"error": {"code": "ORIGIN_REQUIRED", "message": "origin attestation missing", "details": {}}})
             now = datetime.now(timezone.utc)
             
             # CRITICAL: Supersede old correction BEFORE inserting new one
@@ -74,7 +84,7 @@ async def create_correction(payload: CreateCorrectionRequest, response: Response
             
             # Now insert new correction
             try:
-                await conn.execute("INSERT INTO corrections (correction_id, tenant_id, subject_type, subject_id, field_key, value, class, status, supersedes, permissions, actor_type, actor_id, idempotency_key, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8,$9,$10,$11,$12,$13)", new_id, tenant_id, payload.subject.type, payload.subject.id, payload.field_key, json.dumps(payload.value), payload.class_.value, superseded_id, json.dumps(perms), payload.actor.type, payload.actor.id, payload.idempotency_key, now)
+                await conn.execute("INSERT INTO corrections (correction_id, tenant_id, subject_type, subject_id, field_key, value, class, status, supersedes, permissions, actor_type, actor_id, idempotency_key, created_at, origin) VALUES ($1,$2,$3,$4,$5,$6,$7,'ACTIVE',$8,$9,$10,$11,$12,$13,$14)", new_id, tenant_id, payload.subject.type, payload.subject.id, payload.field_key, json.dumps(payload.value), payload.class_.value, superseded_id, json.dumps(perms), payload.actor.type, payload.actor.id, payload.idempotency_key, now, json.dumps(origin))
             except UniqueViolationError:
                 raise HTTPException(409, detail={"error": {"code": "INVALID_REQUEST", "message": "ACTIVE invariant violated (concurrent write). Retry.", "details": {}}})
             

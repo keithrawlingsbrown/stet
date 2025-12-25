@@ -33,11 +33,11 @@ AI chatbots lose critical user corrections during context summarization:
 
 Stet guarantees corrections persist with **database-enforced invariants**:
 
-✅ **Immutable** - No silent overwrites  
-✅ **Permission-first** - No RAG bugs from post-filtering  
-✅ **Auto-superseding** - One ACTIVE correction per field  
-✅ **GDPR-safe** - Compliant revocation with audit trails  
-✅ **Multi-tenant** - Isolated by design  
+✅ **Immutable** - No silent overwrites
+✅ **Permission-first** - No RAG bugs from post-filtering
+✅ **Auto-superseding** - One ACTIVE correction per field
+✅ **GDPR-safe** - Compliant revocation with audit trails
+✅ **Multi-tenant** - Isolated by design
 
 **Key insight:** Guarantees enforced at the database layer, not application logic.
 
@@ -52,7 +52,7 @@ docker compose up --build
 ```
 
 **Access:**
-- API: http://localhost:8000/docs
+- API: http://127.0.0.1:8000/docs
 - Postgres: localhost:5432
 
 **Run tests:**
@@ -64,12 +64,49 @@ docker compose exec api pytest -v
 
 ---
 
+## Platform-Specific Notes
+
+### Windows (Docker Desktop)
+
+**Issue:** Docker Desktop's localhost proxy strips HTTP request paths on Windows, causing requests to fail.
+
+**Symptom:**
+```powershell
+# This FAILS on Windows:
+Invoke-RestMethod -Uri "http://localhost:8000/health"
+# Error: "The underlying connection was closed"
+```
+
+**Workaround:** Use `127.0.0.1` instead of `localhost`:
+```powershell
+# This WORKS on Windows:
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/health"
+```
+
+**Why this happens:** Docker Desktop on Windows uses a localhost proxy that has a known bug where HTTP paths (e.g., `/health`) are stripped from requests, causing the API to receive `GET /` instead of `GET /health`.
+
+**Verification:**
+```powershell
+# Test health endpoint
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/health"
+# Expected output: status
+#                  ------
+#                  ok
+
+# Test API docs
+Start-Process "http://127.0.0.1:8000/docs"
+```
+
+**Note:** This is a Docker Desktop bug, not a Stet issue. The workaround is permanent until Docker fixes their localhost proxy on Windows.
+
+---
+
 ## API Overview
 
 ### POST /v1/corrections
 Create an immutable correction. Automatically supersedes any existing ACTIVE correction for the same field.
 ```bash
-curl -X POST http://localhost:8000/v1/corrections \
+curl -X POST http://127.0.0.1:8000/v1/corrections \
   -H "X-Tenant-Id: <uuid>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -96,7 +133,7 @@ curl -X POST http://localhost:8000/v1/corrections \
 ### GET /v1/facts
 Retrieve ACTIVE corrections with permission filtering applied **before** recall.
 ```bash
-curl "http://localhost:8000/v1/facts?subject_type=user&subject_id=user_123&requester_id=bot:support_v2" \
+curl "http://127.0.0.1:8000/v1/facts?subject_type=user&subject_id=user_123&requester_id=bot:support_v2" \
   -H "X-Tenant-Id: <uuid>"
 ```
 
@@ -119,7 +156,7 @@ curl "http://localhost:8000/v1/facts?subject_type=user&subject_id=user_123&reque
 ### GET /v1/history
 Audit trail showing ACTIVE + SUPERSEDED corrections (REVOKED excluded by default).
 ```bash
-curl "http://localhost:8000/v1/history?subject_type=user&subject_id=user_123&requester_id=bot:support_v2" \
+curl "http://127.0.0.1:8000/v1/history?subject_type=user&subject_id=user_123&requester_id=bot:support_v2" \
   -H "X-Tenant-Id: <uuid>"
 ```
 
@@ -181,6 +218,7 @@ corrections
 ├── permissions (JSONB)
 ├── actor (type, id)
 ├── idempotency_key (TEXT)
+├── origin (JSONB)
 └── created_at (TIMESTAMPTZ)
 
 idempotency
@@ -188,6 +226,14 @@ idempotency
 ├── key (TEXT)
 ├── correction_id (UUID)
 └── payload_hash (TEXT, SHA-256)
+
+enforcement_heartbeats
+├── heartbeat_id (UUID, PK)
+├── tenant_id (UUID, indexed)
+├── system_id (TEXT)
+├── enforced_correction_version (TIMESTAMPTZ)
+├── origin (JSONB)
+└── reported_at (TIMESTAMPTZ)
 ```
 
 ---
@@ -297,11 +343,14 @@ docker compose -f docker-compose.prod.yml up -d
 - Core API (corrections, facts, history)
 - Conformance tests (9/9 passing)
 - Docker deployment
+- Origin attestation (forensic-grade attribution)
+- Enforcement heartbeat tracking
 
 **v1.1 (Next)**
 - Rate limiting (Redis token bucket)
 - Metrics/monitoring (Prometheus)
 - Migration tooling
+- Drift detection (Phase 3 Step 3)
 
 **v1.2 (Future)**
 - Explicit superseding (specify target)
@@ -334,7 +383,7 @@ MIT License - see [LICENSE](LICENSE) for details
 
 ## Author
 
-**Keith Rawlings-Brown**  
+**Keith Rawlings-Brown**
 Building in public to practice real DevSecOps engineering.
 
 **Why build this?**
@@ -363,5 +412,5 @@ Inspired by:
 
 ---
 
-**Status:** Production-ready for pilot deployments  
+**Status:** Production-ready for pilot deployments
 **Last updated:** December 2025

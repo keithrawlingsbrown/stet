@@ -2,7 +2,7 @@
 
 > Security-first correction layer for AI systems — immutable facts that LLMs can't forget.
 
-[![Tests](https://img.shields.io/badge/tests-9%2F9%20passing-success)](https://github.com/keithrawlingsbrown/stet)
+[![Tests](https://img.shields.io/badge/tests-13%2F13%20passing-success)](https://github.com/keithrawlingsbrown/stet)
 [![Docker](https://img.shields.io/badge/docker-ready-blue)](https://www.docker.com/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)](https://fastapi.tiangolo.com/)
 [![Python](https://img.shields.io/badge/python-3.11-blue)](https://www.python.org/)
@@ -414,5 +414,6 @@ Inspired by:
 
 **Status:** Production-ready for pilot deployments
 **Last updated:** December 2025
+
 
 

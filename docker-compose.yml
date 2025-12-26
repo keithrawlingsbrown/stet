@@ -22,6 +22,8 @@
     container_name: stet-api
     environment:
       DATABASE_URL: postgresql://stet:stet_dev@postgres:5432/stet
+      STET_HEARTBEAT_INTERVAL_SECONDS: "60"
+      STET_HEARTBEAT_GRACE_MULTIPLIER: "2"
     depends_on:
       postgres:
         condition: service_healthy

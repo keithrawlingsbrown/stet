@@ -164,6 +164,10 @@ curl "http://127.0.0.1:8000/v1/history?subject_type=user&subject_id=user_123&req
 
 ## Architecture
 
+**📐 [View Full Architecture Diagram](docs/ARCHITECTURE.md)** - Complete system overview with Mermaid visualizations
+
+
+
 ### Core Guarantees
 
 **1. Immutable Corrections**
@@ -414,6 +418,7 @@ Inspired by:
 
 **Status:** Production-ready for pilot deployments
 **Last updated:** December 2025
+
 
 
 
